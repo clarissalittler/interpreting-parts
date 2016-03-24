@@ -1,8 +1,16 @@
 module AST where
 
+import Text.Megaparsec
+import Text.Megaparsec.String
+import qualified Text.Megaparsec.Lexer as L
+
+import Text.PrettyPrint.HughesPJ
+
+
 data Accessor = Dot String | Bracket Exp
 
 type Var = String
+type Name = String
 
 data BinOp = Mult
            | Div
@@ -23,20 +31,28 @@ data UnOp = Typeof
           | Neg
           | Not
 
+data STyp = Double | Single
+
+type RegExp = String -- PLACEHOLDER
+
+data Lit = LString STyp String
+         | LNum Float
+         | LObj [(Name,Exp)]
+         | LBool Bool
+         | LArray [Exp]
+         | LRegExp RegExp
+
 data Exp = EBinOP Exp BinOp Exp
          | EUnOp UnOp Exp
-         | EStringLit String
-         | EObjLit [(String,Exp)]
-         | ENum Float
          | ETernIf Exp Exp Exp
          | ENewExp Exp [Exp]
-         | EDelete Exp
+         | EDelete Exp Accessor
          | EFunCall Exp [Exp]
          | EVar Var
-         | EBool Bool
          | ENan
          | EInf
          | EUndefined
+         | EAccess Exp Accessor
 
 data Stmt = SReturn (Maybe Exp)
           | SBreak (Maybe Var)
@@ -48,5 +64,4 @@ data Stmt = SReturn (Maybe Exp)
           | SWhile Exp [Stmt]
           | SDo [Stmt] Exp
           | STry [Stmt] Name [Stmt]
-          
 
