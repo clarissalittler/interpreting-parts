@@ -2,6 +2,7 @@ module Interp where
 
 import AST
 import Control.Monad.State
+import Control.Monad.Reader
 
 type Heap = [ Val ]
 
@@ -27,7 +28,9 @@ data InterpState = IS { varenv :: Env Addr, -- variables -> heap objects
                         heap :: Heap, -- just a list of values, addresses are indexes
                         thisCtxt :: [Addr]} -- context for using this, addresses of objects
 
-type Interp = StateT InterpState IO
+type Interp = StateT InterpState (ReaderT (Bool,Bool) IO)
+
+data Returnable a = RUndefined | RReturned a | RThrown a
 
 lookupVar :: Var -> Interp Val
 lookupVar v = do
@@ -36,24 +39,35 @@ lookupVar v = do
     Nothing -> error "unknown variable"
     Just i -> hp !! i -- TODO: gracefully handle failure, or even better ensure that it won't happen
 
-truthy :: Val -> Bool
-truthy VInf = True
-truthy VNan = False
-truthy VUndefined = False
-truthy (VBool b) = b
-truthy (VNum f) = f /= 0
-truthy (VString s) = s /= ""
-truthy (VClosure _ _ _) = True
-truthy (VObj _ _ _) = True
+class Truthy a where -- what elements of a type count as "truthy"
+    truthy :: a -> Bool
+
+instance Truthy Bool where
+    truthy = id
+
+instance Truthy Int where
+    truthy = (/=0)
+
+instance Truthy String where
+    truthy = (/= "")
+
+instance Truthy Val where
+    truthy VInf = True
+    truthy VNan = False
+    truthy VUndefined = False
+    truthy (VBool b) = truthy b
+    truthy (VNum f) = truthy f
+    truthy (VString s) = truthy s
+    truthy (VClosure _) = True
+    truthy (VObj _ _ _) = True
+
+{- This class might be overkill, but there ya go -}
 
 funcall :: Val -> [Val] -> Interp Val
 funcall = undefined
 
 allocate :: Val -> Interp Addr
 allocate = undefined
-
-interpBlock :: Block -> Interp ()
-interpBlock = undefined
 
 popThis :: Interp Val
 popThis = do
@@ -83,23 +97,63 @@ interpExp (EDelete eo acc) = undefined
 interpExp (EAccess e a) = undefined -- remember that this needs to access the prototype tree
 interpExp EThis = popThis
 
-interpStmt :: Stmt -> Interp ()
-interpStmt (SReturn 
-interpStmt (SIf e trues ifelses) = undefined
+interpBlock :: [Stmt] -> Interp Val
+interpBlock [] = return RUndefined
+interpBlock (s :: ss) = do
+  v <- interpStmt s
+  case v of
+    RUndefined -> interpBlock fun thr ss
+    _ -> return v
+
+returnable :: Interp Bool
+returnable = fst `fmap` (lift ask)
+
+throwable :: Interp Bool
+throwable = snd `fmap` (list ask)
+
+exitEarly :: Returnable Val -> Interp (Returnable Val) -> Interp (Returnable Val)
+exitEarly rv m = case rv of
+                   RUndefined -> m
+                   _ -> return rv
+
+-- the first boolean argument is whether the statement is in a "returnable" context
+-- the second boolean argument is whether the statement is in a "throwable" context
+interpStmt :: Stmt -> Interp (Returnable Val)
+interpStmt (SReturn e) = do
+  r <- returnable
+  if r 
+  then 
+      case e of
+        Nothing -> return $ RReturned VUndefined
+        Just e' -> return $ RReturned `fmap` interpExp e'
+  else error "Returning from a non-function context"
+interpStmt (SIf e trues ifelses) = do
+       v <- interpExp e
+       if truthy v
+       then interpBlock trues
+       else elseInterp ifelses
+    where elseInterp [] = RUndefined
+          elseInterp (Just e, b) :: elses = do
+                                     v <- interpExp e
+                                     if truthy v
+                                     then interpBlock b
+                                     else elseIntepr elses
+          elseInterp ((Nothing, b) :: _) = interpBlock b
 interpStmt (SWhile e ss) = do
   v <- interpExp e
   if truthy v 
   then do 
-    mapM_ interpStmt ss
-    interpStmt (SWhile e ss)
-  else return ()
+    rv <- interpBlock ss
+    exitEarly rv $ interpStmt (SWhile e ss)
+  else return RUndefined
 interpStmt (SDo ss e) = do
-  mapM_ interpStmt ss
-  v <- interpExp e
-  if truthy v
-  then do
-    interpStmt (SDo ss e)
-  else return ()
+  r <- interpBlock ss
+  exitEarly r $ do 
+    v <- interpExp e
+    if truthy v
+    then do
+      interpStmt (SDo ss e)
+    else return RUndefined
 interpStmt (SFor minit mtest minc ss) = undefined
 interpStmt (SForIn v e ss) = undefined
 interpStmt (STry tries n catches) = undefined
